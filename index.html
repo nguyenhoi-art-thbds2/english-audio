@@ -44,6 +44,7 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 #resumeBtn{background:var(--green);color:#fff;border-color:var(--green-d);box-shadow:0 4px 0 var(--green-d)}
 #replayBtn{background:var(--blue);color:#fff;border-color:var(--blue-d);box-shadow:0 4px 0 var(--blue-d)}
 #stopBtn{background:var(--pink);color:#fff;border-color:var(--pink-d);box-shadow:0 4px 0 var(--pink-d)}
+.dl{width:100%;margin-top:14px;background:var(--blue);color:#fff;border-color:var(--blue-d);box-shadow:0 4px 0 var(--blue-d);font-size:1.05rem}
 .hidden{display:none!important}
 .stage{position:relative;text-align:center;padding:16px 12px 20px;border-radius:24px;background:linear-gradient(160deg,var(--purple),var(--blue));color:#fff;margin-bottom:14px;min-height:170px;display:flex;flex-direction:column;justify-content:center;align-items:center}
 .mascot{line-height:0}.mascot img{width:84px;height:84px;border-radius:50%;border:4px solid #fff;object-fit:cover;background:#fff}
@@ -131,9 +132,10 @@ footer b{color:var(--ink)}
       <button id="replayBtn" type="button" disabled>🔁 Nghe lại</button>
       <button id="stopBtn" type="button" disabled>⏹ Dừng bài</button>
     </div>
-    <p class="note">Âm thanh được phát trực tiếp bằng giọng đọc của trình duyệt, nên không tải được tệp MP3. Mỗi từ đọc xong số lần đã chọn rồi mới chuyển từ tiếp theo, không chồng lấn.</p>
+    <button class="dl" id="dlBtn" type="button">⬇ Ghi và tải file MP3 về máy</button>
+    <p class="note" id="recMsg">Bấm nút xanh, chọn Cho phép và bật chia sẻ âm thanh của thẻ. App sẽ phát cả bài rồi tự tạo file MP3, thời gian chờ bằng đúng thời lượng bài. Chỉ dùng được trên máy tính với Chrome hoặc Edge.</p>
   </section>
-  <footer>Chúc các con học thật vui! 🌈<br><b>App được phát triển bởi thầy Hợi</b> · Trường Tiểu học Bảo Đài số 2 · TP. Bắc Ninh</b>
+  <footer>Chúc các con học thật vui! 🌈<br><b>app được phát triển bởi thầy Hợi</b> · Trường Tiểu học Bảo Đài số 2 · TP. Bắc Ninh</footer>
 </div>
 
 <script>
@@ -208,8 +210,8 @@ footer b{color:var(--ink)}
   function tick(ms){return new Promise(function(r){setTimeout(r,ms)})}
   function setProgress(d,t){var p=t?Math.round(d/t*100):0;el.fill.style.width=p+'%';el.progTxt.textContent='Đã nghe '+d+'/'+t+' từ';el.progPct.textContent=p+'%'}
   function setBtns(){var on=state==='playing'||state==='paused';
-    el.pause.disabled=state!=='playing';el.resume.disabled=state!=='paused';el.replay.disabled=!(on||state==='finished');el.stop.disabled=!on;
-    el.start.disabled=on||!voices.length;el.stage.classList.toggle('live',state==='playing');el.stage.classList.toggle('on',on)}
+    el.pause.disabled=state!=='playing';el.resume.disabled=state!=='paused';el.replay.disabled=!(on||state==='finished')||!!rec;el.stop.disabled=!on;
+    el.start.disabled=on||!voices.length;$('dlBtn').disabled=on||busy||!voices.length;el.stage.classList.toggle('live',state==='playing');el.stage.classList.toggle('on',on)}
   function speakOnce(text,id){return new Promise(function(res){utter(text,function(r){res(r)})})}
   async function wait(sec,id){var left=sec*1000;while(left>0){if(id!==run)return false;await tick(100);if(!paused)left-=100}return id===run}
   async function holdWhilePaused(id){while(paused&&id===run)await tick(100);return id===run}
@@ -230,7 +232,7 @@ footer b{color:var(--ink)}
       if(idx<words.length&&!await wait(cfg.gapWord,id))return;
     }
     if(id!==run)return;
-    state='finished';el.cur.textContent='Giỏi quá! Con đã nghe xong 🌟';el.sub.textContent='Bấm Nghe lại để nghe từ đầu nhé';setBtns()}
+    state='finished';el.cur.textContent='Giỏi quá! Con đã nghe xong 🌟';el.sub.textContent='Bấm Nghe lại để nghe từ đầu nhé';setBtns();if(rec)finishRec()}
 
   function begin(from){
     synth.cancel();run++;paused=false;
@@ -245,7 +247,7 @@ footer b{color:var(--ink)}
   el.replay.onclick=function(){
     if(state==='finished'){begin(0);return}
     synth.cancel();run++;paused=false;rep=0;state='playing';setBtns();play(run)};   // đọc lại từ hiện tại từ lần 1
-  el.stop.onclick=function(){run++;synth.cancel();paused=false;state='idle';idx=0;rep=0;
+  el.stop.onclick=function(){if(rec)cancelRec();run++;synth.cancel();paused=false;state='idle';idx=0;rep=0;
     el.cur.textContent='Đã dừng';el.sub.textContent='Bấm Tạo MP3 để học lại nhé';setProgress(0,Math.min(getWords().length,MAX));setBtns()};
 
   // ---------- chia sẻ link ----------
@@ -255,6 +257,53 @@ footer b{color:var(--ink)}
     var msg=$('shareMsg');
     (navigator.clipboard?navigator.clipboard.writeText(url):Promise.reject()).then(function(){msg.textContent='Đã sao chép link. Gửi cho học sinh qua Zalo hoặc email.'},
       function(){window.prompt('Sao chép link này:',url)})};
+
+  // ---------- ghi âm và xuất MP3 ----------
+  var rec=null,busy=false,recChunks=[],recStream=null;
+  var recMsg=$('recMsg');
+  var canRec=!!(navigator.mediaDevices&&navigator.mediaDevices.getDisplayMedia&&window.MediaRecorder)&&!/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  if(!canRec){$('dlBtn').classList.add('hidden');recMsg.textContent='Tải file MP3 chỉ dùng được trên máy tính với Chrome hoặc Edge.'}
+  function say(t){recMsg.textContent=t}
+  function stopStream(){if(recStream){recStream.getTracks().forEach(function(t){t.stop()});recStream=null}}
+  function saveFile(b,ext){var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='luyen-phat-am-co-hien.'+ext;document.body.appendChild(a);a.click();a.remove();setTimeout(function(){URL.revokeObjectURL(a.href)},10000)}
+  function loadLame(){return new Promise(function(res,rej){if(window.lamejs)return res();var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js';s.onload=res;s.onerror=rej;document.head.appendChild(s)})}
+  async function startRec(){
+    if(!getWords().length){say('Hãy nhập từ vựng trước nhé.');return}
+    var st;
+    try{st=await navigator.mediaDevices.getDisplayMedia({video:true,audio:true,preferCurrentTab:true,selfBrowserSurface:'include',systemAudio:'exclude'})}
+    catch(e){say('Chưa được cho phép ghi âm. Hãy bấm lại và chọn Cho phép.');return}
+    if(!st.getAudioTracks().length){st.getTracks().forEach(function(t){t.stop()});say('Chưa có âm thanh. Hãy bấm lại, chọn thẻ này và bật chia sẻ âm thanh của thẻ.');return}
+    recStream=st;recChunks=[];
+    var mime=['audio/webm;codecs=opus','audio/webm'].filter(function(m){return MediaRecorder.isTypeSupported(m)})[0];
+    rec=new MediaRecorder(new MediaStream(st.getAudioTracks()),mime?{mimeType:mime}:undefined);
+    rec.ondataavailable=function(e){if(e.data&&e.data.size)recChunks.push(e.data)};
+    st.getVideoTracks().forEach(function(t){t.onended=function(){if(rec&&rec.state!=='inactive')cancelRec('Bạn đã tắt chia sẻ nên việc ghi âm bị hủy.')}});
+    rec.start(1000);say('Đang ghi âm. Hãy giữ nguyên trang này cho đến khi bài đọc xong.');
+    begin(0)}
+  function finishRec(){var r=rec;if(!r)return;
+    setTimeout(function(){
+      r.onstop=function(){stopStream();rec=null;toMp3(new Blob(recChunks,{type:r.mimeType||'audio/webm'}))};
+      if(r.state!=='inactive')r.stop()},1500)}
+  function cancelRec(msg){var r=rec;rec=null;recChunks=[];if(r&&r.state!=='inactive'){r.onstop=null;try{r.stop()}catch(e){}}stopStream();say(msg||'Đã hủy ghi âm.');setBtns()}
+  async function toMp3(blob){
+    busy=true;setBtns();say('Đang chuyển sang MP3...');
+    try{
+      var ctx=new (window.AudioContext||window.webkitAudioContext)();
+      var buf=await ctx.decodeAudioData(await blob.arrayBuffer());if(ctx.close)ctx.close();
+      await loadLame();
+      var ch=buf.numberOfChannels,n=buf.length,mono=new Float32Array(n),i,c,d,v;
+      for(c=0;c<ch;c++){d=buf.getChannelData(c);for(i=0;i<n;i++)mono[i]+=d[i]/ch}
+      var pcm=new Int16Array(n);for(i=0;i<n;i++){v=Math.max(-1,Math.min(1,mono[i]));pcm[i]=v<0?v*32768:v*32767}
+      var enc=new lamejs.Mp3Encoder(1,buf.sampleRate,128),out=[],step=1152*20,k=0;
+      for(i=0;i<n;i+=step){var b=enc.encodeBuffer(pcm.subarray(i,i+step));if(b.length)out.push(new Uint8Array(b));
+        if(++k%40===0){say('Đang chuyển sang MP3... '+Math.round(i/n*100)+'%');await tick(0)}}
+      var f=enc.flush();if(f.length)out.push(new Uint8Array(f));
+      saveFile(new Blob(out,{type:'audio/mpeg'}),'mp3');
+      say('Xong rồi! File MP3 đã được tải về máy. Nếu file bị im lặng, hãy đổi sang giọng khác rồi ghi lại.')
+    }catch(e){
+      saveFile(blob,'webm');say('Không chuyển được sang MP3 nên đã tải file âm thanh .webm (mở được bằng Chrome hoặc VLC).')}
+    busy=false;setBtns()}
+  $('dlBtn').onclick=function(){if(state==='idle'||state==='finished')startRec()};
 
   el.teacher.addEventListener('change',applyMode);
   window.addEventListener('pagehide',function(){synth&&synth.cancel()});
